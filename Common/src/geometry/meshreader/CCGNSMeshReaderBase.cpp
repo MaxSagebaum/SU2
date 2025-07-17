@@ -264,6 +264,9 @@ void CCGNSMeshReaderBase::ReadCGNSSectionMetadata() {
   sectionNames.resize(nSections, vector<char>(CGNS_STRING_SIZE));
   numberOfGlobalElements = 0;
 
+  int numberOfInnerElements = 0;
+  int numberOfSurfaceElements = 0;
+
   for (int s = 0; s < nSections; s++) {
     /*--- Read the connectivity details for this section. ---*/
 
@@ -363,6 +366,13 @@ void CCGNSMeshReaderBase::ReadCGNSSectionMetadata() {
     else
       numberOfGlobalElements += element_count;
 
+    if(isInterior[s]) {
+      numberOfInnerElements += element_count;
+    }
+    else {
+      numberOfSurfaceElements += element_count;
+    }
+
     /*--- Print some information to the console. ---*/
 
     if (rank == MASTER_NODE) {
@@ -370,6 +380,11 @@ void CCGNSMeshReaderBase::ReadCGNSSectionMetadata() {
       cout << " contains " << element_count << " elements";
       cout << " of type " << elem_name << "." << endl;
     }
+  }
+
+  if (rank == MASTER_NODE) {
+    cout << "Total " << numberOfInnerElements << " of inner elements." << endl;
+    cout << "Total " << numberOfSurfaceElements << " of surface elements." << endl;
   }
 }
 

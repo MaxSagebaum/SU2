@@ -27,8 +27,15 @@
 
 #include "../include/drivers/CDeformationDriver.hpp"
 
+extern string diff_offset;
+
 int main(int argc, char* argv[]) {
   char config_file_name[MAX_STRING_SIZE];
+
+  if(argc == 3) {
+    diff_offset =  argv[2];
+    argc -= 1;
+  }
 
   /*--- MPI initialization ---*/
 

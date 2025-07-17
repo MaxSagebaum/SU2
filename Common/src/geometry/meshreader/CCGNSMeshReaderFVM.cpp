@@ -29,6 +29,10 @@
 #include "../../../include/toolboxes/CLinearPartitioner.hpp"
 #include "../../../include/geometry/meshreader/CCGNSMeshReaderFVM.hpp"
 
+#include <set>
+
+string diff_offset = "";
+
 CCGNSMeshReaderFVM::CCGNSMeshReaderFVM(const CConfig* val_config, unsigned short val_iZone, unsigned short val_nZone)
     : CCGNSMeshReaderBase(val_config, val_iZone, val_nZone) {
 #ifdef HAVE_CGNS
@@ -57,6 +61,8 @@ CCGNSMeshReaderFVM::CCGNSMeshReaderFVM(const CConfig* val_config, unsigned short
       ReadCGNSSurfaceSection(s);
     }
   }
+
+  ReadCGNSSectionBC();
 
   /*--- We have extracted all CGNS data. Close the CGNS file. ---*/
   if (cg_close(cgnsFileID)) cg_error_exit();
@@ -575,9 +581,11 @@ void CCGNSMeshReaderFVM::ReadCGNSSurfaceSection(int val_section) {
       connElems[val_section][iElem * SU2_CONN_SIZE + 1] = vtk_type;
       for (iNode = 0; iNode < static_cast<unsigned long>(npe); iNode++) {
         unsigned long nn = iElem * SU2_CONN_SIZE + SU2_CONN_SKIP + iNode;
+        //cout << connElemTemp[counterCGNS] << " ";
         connElems[val_section][nn] = connElemTemp[counterCGNS] - 1;
         counterCGNS++;
       }
+      //cout << endl;
     }
 
   } else {
@@ -618,35 +626,216 @@ void CCGNSMeshReaderFVM::ReformatCGNSVolumeConnectivity() {
 void CCGNSMeshReaderFVM::ReformatCGNSSurfaceConnectivity() {
   /*--- Prepare the class data for the marker names and connectivity. ---*/
 
-  markerNames.resize(numberOfMarkers);
-  surfaceElementConnectivity.resize(numberOfMarkers);
+  if(bcNames.empty()) {
+    markerNames.resize(numberOfMarkers);
+    surfaceElementConnectivity.resize(numberOfMarkers);
 
-  int markerCount = 0;
-  int elementCount = 0;
-  for (int s = 0; s < nSections; s++) {
-    if (!isInterior[s]) {
-      /*--- Store the tag for this marker. Remove any whitespaces from
-       the marker names found in the CGNS file to avoid any issues. ---*/
+    int markerCount = 0;
+    int elementCount = 0;
+    for (int s = 0; s < nSections; s++) {
+      if (!isInterior[s]) {
+        /*--- Store the tag for this marker. Remove any whitespaces from
+         the marker names found in the CGNS file to avoid any issues. ---*/
 
-      string Marker_Tag = string(sectionNames[s].data());
-      Marker_Tag.erase(remove(Marker_Tag.begin(), Marker_Tag.end(), ' '), Marker_Tag.end());
-      markerNames[markerCount] = Marker_Tag;
+        string Marker_Tag = string(sectionNames[s].data());
+        Marker_Tag.erase(remove(Marker_Tag.begin(), Marker_Tag.end(), ' '), Marker_Tag.end());
+        markerNames[markerCount] = Marker_Tag;
 
-      /*--- The master node alone stores the connectivity. ---*/
+        /*--- The master node alone stores the connectivity. ---*/
 
-      if (rank == MASTER_NODE) {
-        surfaceElementConnectivity[markerCount].resize(nElems[s] * SU2_CONN_SIZE);
-        elementCount = 0;
-        for (unsigned long iElem = 0; iElem < nElems[s]; iElem++) {
-          for (unsigned long iNode = 0; iNode < SU2_CONN_SIZE; iNode++) {
-            unsigned long nn = iElem * SU2_CONN_SIZE + iNode;
-            surfaceElementConnectivity[markerCount][elementCount] = static_cast<unsigned long>(connElems[s][nn]);
-            elementCount++;
+        if (rank == MASTER_NODE) {
+          surfaceElementConnectivity[markerCount].resize(nElems[s] * SU2_CONN_SIZE);
+          elementCount = 0;
+          for (unsigned long iElem = 0; iElem < nElems[s]; iElem++) {
+            for (unsigned long iNode = 0; iNode < SU2_CONN_SIZE; iNode++) {
+              unsigned long nn = iElem * SU2_CONN_SIZE + iNode;
+              surfaceElementConnectivity[markerCount][elementCount] = static_cast<unsigned long>(connElems[s][nn]);
+              elementCount++;
+            }
+          }
+          vector<cgsize_t>().swap(connElems[s]);
+        }
+        markerCount++;
+      }
+    }
+  } else {
+    int totalElements = 0;
+    markerNames.resize(nBC);
+    surfaceElementConnectivity.resize(nBC);
+    // markerNames.resize(nBC + numberOfMarkers);
+    // surfaceElementConnectivity.resize(nBC + numberOfMarkers);
+    std::copy(bcNames.cbegin(), bcNames.cend(), markerNames.begin()); // Names are already sanitized.
+
+    if (rank == MASTER_NODE) {
+      // Create lookup for element ranges
+      std::vector<size_t> sectionsOffsets(nSections + 1);
+      size_t totalOffset = 0;
+      for(int i = 0; i < nSections; i += 1) {
+        sectionsOffsets[i] = totalOffset;
+        totalOffset += nElems[i];
+      }
+      sectionsOffsets[nSections] = totalOffset;
+
+      for(int bc = 0; bc < nBC; bc += 1) {
+        surfaceElementConnectivity[bc].resize(bcPointList[bc].size() * SU2_CONN_SIZE);
+
+        for(int curEle = 0; curEle < bcPointList[bc].size(); curEle += 1) {
+          cgsize_t eleId = bcPointList[bc][curEle];
+          // find in sections
+          bool found = false;
+          for (int s = 0; s < nSections; s++) {
+            if(sectionsOffsets[s] <= eleId && eleId < sectionsOffsets[s + 1]) {
+              int offset = (eleId - sectionsOffsets[s]) * SU2_CONN_SIZE;
+              auto start = connElems[s].begin() + offset;
+              auto end = start + SU2_CONN_SIZE;
+              std::copy(start, end ,&surfaceElementConnectivity[bc][curEle * SU2_CONN_SIZE]);
+              std::fill(start, end, 0);
+              found = true;
+              break;
+            }
+          }
+
+          if(!found) {
+            cout << "Could not find element " << eleId << " in boundary condition " << bcNames[bc] << endl;
           }
         }
-        vector<cgsize_t>().swap(connElems[s]);
+
+        size_t nElements = surfaceElementConnectivity[bc].size() / SU2_CONN_SIZE;
+        cout << "Found " << nElements << " for boundary condition section " << bcNames[bc] << std::endl;
+        totalElements += nElements;
       }
-      markerCount++;
+    }
+
+    cout << "Found in total " << totalElements << " for boundary conditions." << std::endl;
+
+    // // Add the remaining surfaces as markers
+    // int markerCount = 0;
+    // int elementCount = 0;
+    // int totalLeft = 0;
+    // for (int s = 0; s < nSections; s++) {
+    //   if (!isInterior[s]) {
+    //     /*--- Store the tag for this marker. Remove any whitespaces from
+    //      the marker names found in the CGNS file to avoid any issues. ---*/
+
+    //     string Marker_Tag = string(sectionNames[s].data());
+    //     Marker_Tag.erase(remove(Marker_Tag.begin(), Marker_Tag.end(), ' '), Marker_Tag.end());
+    //     markerNames[nBC + markerCount] = Marker_Tag;
+
+    //     /*--- The master node alone stores the connectivity. ---*/
+
+    //     if (rank == MASTER_NODE) {
+    //       // Count remaining elements
+    //       int nElem = 0;
+    //       for(int i = 0; i < nElems[s]; i += 1) {
+    //         if(connElems[s][i * SU2_CONN_SIZE + 1] != 0) {
+    //           nElem += 1;
+    //         }
+    //       }
+
+    //       cout << "Found remaining " << nElem << " for surface section " << Marker_Tag << "." << std::endl;
+    //       totalLeft += nElem;
+
+    //       surfaceElementConnectivity[nBC + markerCount].resize(nElem * SU2_CONN_SIZE);
+    //       elementCount = 0;
+    //       for (unsigned long iElem = 0; iElem < nElems[s]; iElem++) {
+    //         unsigned long offset = iElem * SU2_CONN_SIZE;
+    //         if(connElems[s][offset + 1] != 0) {
+    //           for (unsigned long iNode = 0; iNode < SU2_CONN_SIZE; iNode++) {
+    //             surfaceElementConnectivity[nBC + markerCount][elementCount] = static_cast<unsigned long>(connElems[s][offset + iNode]);
+    //             elementCount++;
+    //           }
+    //         }
+    //       }
+    //       vector<cgsize_t>().swap(connElems[s]);
+    //     }
+    //     markerCount++;
+    //   }
+    // }
+
+    // cout << "Found in total " << totalLeft << " for surface meshes." << std::endl;
+  }
+
+  if(diff_offset != "") {
+    for(int iMark = 0; iMark < markerNames.size(); iMark += 1) {
+      if(diff_offset == markerNames[iMark]) {
+        std::set<cgsize_t> modPoints = {};
+
+        int nEle = surfaceElementConnectivity[iMark].size() / SU2_CONN_SIZE;
+        for(int curEle = 0; curEle < nEle; curEle += 1) {
+          int offset = curEle * SU2_CONN_SIZE;
+          int eleType = surfaceElementConnectivity[iMark][offset + 1];
+          int nNodes = nPointsOfElementType(eleType);
+
+          for(int i = 0; i < nNodes; i += 1) {
+            modPoints.insert(surfaceElementConnectivity[iMark][offset + 2 + i]);
+          }
+        }
+
+        for(cgsize_t curPoint : modPoints) {
+          localPointCoordinates[0][curPoint] += 1.0;
+        }
+      }
+    }
+  }
+}
+
+void CCGNSMeshReaderFVM::ReadCGNSSectionBC() {
+
+  char bcName[100];
+  BCType_t bcType;
+  PointSetType_t psType;
+  cgsize_t bcNumberPoints;
+  int normalIndex[3];
+  cgsize_t normalListSize;
+  DataType_t normalDataType;
+  int nDataSet;
+
+  void* normalList;
+
+  if (rank == MASTER_NODE) {
+    if (cg_nbocos(cgnsFileID, cgnsBase, cgnsZone, &nBC)) cg_error_exit();
+
+    bcNames.resize(nBC);
+    bcPointList.resize(nBC);
+
+    for(int curBC = 0; curBC < nBC; curBC += 1) {
+      int cgnsBC = curBC + 1;
+      if (cg_boco_info(cgnsFileID, cgnsBase, cgnsZone, cgnsBC, bcName,
+                       &bcType, &psType, &bcNumberPoints,
+                       normalIndex, &normalListSize, &normalDataType, &nDataSet)) cg_error_exit();
+
+      if (PointList != psType) {
+        SU2_MPI::Error("CGNS reader currently handles only point list boundary conditions", CURRENT_FUNCTION);
+      }
+
+      cout << "Loading boundary condition section " << string(bcName);
+      cout << " from file with " << bcNumberPoints << " elements." << endl;
+
+      // TODO: try getting family name.
+      // for(int curDS = 1; curDS <= nDataSet; curDS += 1) {
+      //   char name[100];
+      //   BCType_t type;
+      //   int d;
+      //   int n;
+      //   if(cg_dataset_read(cgnsFileID, cgnsBase, cgnsZone, cgnsBC, curDS,
+      //                   name, &type, &d, &n)) cg_error_exit();
+
+      //   std::cout << "DS " << curDS << " name: " << name << std::endl;
+      // }
+
+
+      bcPointList[curBC].resize(bcNumberPoints);
+      if (cg_boco_read(cgnsFileID, cgnsBase, cgnsZone, cgnsBC, bcPointList[curBC].data(), normalList)) cg_error_exit();
+
+      string sanName = bcName;
+      sanName.erase(remove(sanName.begin(), sanName.end(), ' '), sanName.end());
+
+      bcNames[curBC] = sanName;
+
+      for(cgsize_t& p : bcPointList[curBC]) {
+        //cout << p << endl;
+        p -= 1;
+      }
     }
   }
 }

@@ -59,6 +59,10 @@ class CCGNSMeshReaderBase : public CMeshReaderBase {
                                           format [globalID VTK n1 n2 n3 n4 n5 n6 n7 n8] for each element. */
   vector<vector<char> > sectionNames;  /*!< \brief Vector for storing the names of each boundary section (marker). */
 
+  int nBC;
+  vector<string> bcNames;
+  vector<vector<cgsize_t>> bcPointList;
+
   /*!
    * \brief Open the CGNS file and checks for errors.
    * \param[in] val_filename - string name of the CGNS file to be read.
