@@ -666,6 +666,8 @@ void CCGNSMeshReaderFVM::ReformatCGNSSurfaceConnectivity() {
     // surfaceElementConnectivity.resize(nBC + numberOfMarkers);
     std::copy(bcNames.cbegin(), bcNames.cend(), markerNames.begin()); // Names are already sanitized.
 
+    numberOfMarkers = nBC;
+
     if (rank == MASTER_NODE) {
       // Create lookup for element ranges
       std::vector<size_t> sectionsOffsets(nSections + 1);
