@@ -63,6 +63,7 @@ CCGNSMeshReaderFVM::CCGNSMeshReaderFVM(const CConfig* val_config, unsigned short
   }
 
   ReadCGNSSectionBC();
+  ReadCGNSSectionConn();
 
   /*--- We have extracted all CGNS data. Close the CGNS file. ---*/
   if (cg_close(cgnsFileID)) cg_error_exit();
@@ -774,7 +775,7 @@ void CCGNSMeshReaderFVM::ReformatCGNSSurfaceConnectivity() {
         }
 
         for(cgsize_t curPoint : modPoints) {
-          localPointCoordinates[0][curPoint] += 1.0;
+          localPointCoordinates[1][curPoint] += 0.2;
         }
       }
     }
@@ -839,6 +840,61 @@ void CCGNSMeshReaderFVM::ReadCGNSSectionBC() {
         p -= 1;
       }
     }
+  }
+}
+
+void CCGNSMeshReaderFVM::ReadCGNSSectionConn() {
+  int nconns;
+
+  char connName[33];
+  GridLocation_t location;
+  GridConnectivityType_t type;
+  PointSetType_t psType;
+  cgsize_t nPnts;
+
+  char parentName[33];
+  ZoneType_t parentType;
+  PointSetType_t parentPSType;
+  DataType_t parentDataType;
+  cgsize_t nParentPts;
+
+  if (rank == MASTER_NODE) {
+    if(cg_nconns(cgnsFileID, cgnsBase, cgnsZone, &nconns)) cg_error_exit();
+
+    cout << "Connectivities: " << nconns << endl;
+
+    bcNames.resize(nBC + nconns);
+    bcPointList.resize(nBC + nconns);
+
+    for (int curCon = 0; curCon < nconns; curCon += 1) {
+      int cgnsCon = curCon + 1;
+
+
+      if(cg_conn_info(cgnsFileID, cgnsBase, cgnsZone, cgnsCon, connName,
+                       &location, &type, &psType, &nPnts, parentName, &parentType, &parentPSType, &parentDataType, &nParentPts)) cg_error_exit();
+
+      string sanName = connName;
+      sanName = "conn_" + sanName;
+      sanName.erase(remove(sanName.begin(), sanName.end(), ' '), sanName.end());
+      bcNames[nBC + curCon] = sanName;
+
+      cout << "Connectivity: " << sanName << " parent: " << parentName << " number of points: " << nPnts << endl;
+
+      if (PointList != psType) {
+        SU2_MPI::Error("CGNS reader currently handles only point list boundary conditions", CURRENT_FUNCTION);
+      }
+
+      bcPointList[nBC + curCon].resize(nPnts);
+
+      if(cg_conn_read(cgnsFileID, cgnsBase, cgnsZone, cgnsCon, bcPointList[nBC + curCon].data(),
+                         parentDataType, NULL)) cg_error_exit();
+
+      for(cgsize_t& p : bcPointList[nBC + curCon]) {
+        p -= 1;
+      }
+    }
+
+    nBC += nconns;
   }
 }
 #endif

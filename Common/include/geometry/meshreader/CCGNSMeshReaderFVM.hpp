@@ -51,6 +51,7 @@ class CCGNSMeshReaderFVM final : public CCGNSMeshReaderBase {
   void ReadCGNSSurfaceSection(int val_section);
 
   void ReadCGNSSectionBC();
+  void ReadCGNSSectionConn();
 
   /*!
    * \brief Reformats the CGNS volume connectivity from file into the standard base class data structures.
